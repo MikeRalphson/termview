@@ -1,28 +1,93 @@
 const Jimp = require('jimp');
+const chalk = require('chalk');
 
-function rgbToAnsi256(r, g, b) {
-    if (r === g && g === b) {
-        if (r < 8) {
-            return 16;
-        }
-        if (r > 248) {
-            return 231;
-        }
-        return Math.round(((r - 8) / 247) * 24) + 232;
-    }
-    var ansi = 16
-        + (36 * Math.round(r / 255 * 5))
-        + (6 * Math.round(g / 255 * 5))
-        + Math.round(b / 255 * 5);
-    return ansi;
+const ROW_OFFSET = 2;
+const PIXEL = '\u2584';
+
+function scale(width, height, originalWidth, originalHeight) {
+	const originalRatio = originalWidth / originalHeight;
+	const factor = (width / height > originalRatio ? height / originalHeight : width / originalWidth);
+	width = factor * originalWidth;
+	height = factor * originalHeight;
+	return {width, height};
 }
 
+function checkAndGetDimensionValue(value, percentageBase) {
+	if (typeof value === 'string' && value.endsWith('%')) {
+		const percentageValue = Number.parseFloat(value);
+		if (!Number.isNaN(percentageValue) && percentageValue > 0 && percentageValue <= 100) {
+			return Math.floor(percentageValue / 100 * percentageBase);
+		}
+	}
+
+	if (typeof value === 'number') {
+		return value;
+	}
+
+	throw new Error(`${value} is not a valid dimension value`);
+}
+
+function calculateWidthHeight(imageWidth, imageHeight, inputWidth, inputHeight, preserveAspectRatio) {
+	const terminalColumns = process.stdout.columns || 80;
+	const terminalRows = process.stdout.rows - ROW_OFFSET || 24;
+
+	let width;
+	let height;
+
+	if (inputHeight && inputWidth) {
+		width = checkAndGetDimensionValue(inputWidth, terminalColumns);
+		height = checkAndGetDimensionValue(inputHeight, terminalRows) * 2;
+
+		if (preserveAspectRatio) {
+			({width, height} = scale(width, height, imageWidth, imageHeight));
+		}
+	} else if (inputWidth) {
+		width = checkAndGetDimensionValue(inputWidth, terminalColumns);
+		height = imageHeight * width / imageWidth;
+	} else if (inputHeight) {
+		height = checkAndGetDimensionValue(inputHeight, terminalRows) * 2;
+		width = imageWidth * height / imageHeight;
+	} else {
+		({width, height} = scale(terminalColumns, terminalRows * 2, imageWidth, imageHeight));
+	}
+
+	if (width > terminalColumns) {
+		({width, height} = scale(terminalColumns, terminalRows * 2, width, height));
+	}
+
+	width = Math.round(width);
+	height = Math.round(height);
+
+	return {width, height};
+}
+
+async function render(buffer, {width: inputWidth, height: inputHeight, preserveAspectRatio}) {
+	const image = await Jimp.read(buffer);
+	const {bitmap} = image;
+
+	const {width, height} = calculateWidthHeight(bitmap.width, bitmap.height, inputWidth, inputHeight, preserveAspectRatio);
+
+	image.resize(width, height);
+
+	let result = '';
+	for (let y = 0; y < image.bitmap.height - 1; y += 2) {
+		for (let x = 0; x < image.bitmap.width; x++) {
+			const {r, g, b, a} = Jimp.intToRGBA(image.getPixelColor(x, y));
+			const {r: r2, g: g2, b: b2} = Jimp.intToRGBA(image.getPixelColor(x, y + 1));
+			result += a === 0 ? chalk.reset(' ') : chalk.bgRgb(r, g, b).rgb(r2, g2, b2)(PIXEL);
+		}
+
+		result += '\n';
+	}
+
+	return result;
+}
 
 /**
- * 
- * @param {String|Buffer|Jimp} image 
+ *
+ * @param {String|Buffer|Jimp} image
  * @param {Number} [width]
- * @param {*} [height] 
+ * @param {*} [height]
  * @returns {String} The image as a string of ANSI escape codes
  */
 async function Image(image, width, height) {
@@ -31,19 +96,11 @@ async function Image(image, width, height) {
     return new Promise((resolve, reject) => {
         var pixels = [];
         var result = "";
-        Jimp.read(image, (err, image) => {
+        Jimp.read(image, async (err, image) => {
             if (err) throw err;
-            image = image.resize(width, height)
-            image.scan(0, 0, image.bitmap.width, image.bitmap.height, function(x, y, idx) {
-                var red = this.bitmap.data[idx + 0];
-                var green = this.bitmap.data[idx + 1];
-                var blue = this.bitmap.data[idx + 2];
-                pixels.push(rgbToAnsi256(red, green, blue))
-            });
-            pixels.forEach((item, i) => {
-                result = result + "\033[48;5;" + item + "m \033[0;00m"
-            });
-            return resolve(result)
+            //image = image.resize(width, height)
+            console.log(await render(image.bitmap, {width: image.bitmap.width, height: image.bitmap.height, preserveAspectRatio: true}));
+            return true;
         })
     })
 }
